@@ -1,0 +1,663 @@
+// ============================================================
+// ВЕРСИЯ 4.0 - ФИНАЛЬНАЯ (С VENDORCODE)
+// ============================================================
+
+const SHEET_NAME = 'adv_effectiveness';
+
+// API эндпоинты
+const WB_ORDERS_API = 'https://statistics-api.wildberries.ru/api/v1/supplier/orders';
+const WB_ANALYTICS_API = 'https://seller-analytics-api.wildberries.ru/api/analytics/v3/sales-funnel/products';
+const WB_CAMPAIGNS_INFO_API = 'https://advert-api.wildberries.ru/api/advert/v2/adverts';
+
+// ============================================================
+// 1. УСТАНОВКА ТОКЕНА
+// ============================================================
+function setWBToken() {
+  const token = 'ВАШ_КЛЮЧ_WILDBERRIES_СЮДА';
+  PropertiesService.getScriptProperties().setProperty('WB_TOKEN', token);
+  SpreadsheetApp.getUi().alert('✅ Токен сохранен! Удали его из кода.');
+}
+
+// ============================================================
+// 2. ГЛАВНАЯ ФУНКЦИЯ
+// ============================================================
+function main() {
+  const sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(SHEET_NAME);
+  if (!sheet) {
+    SpreadsheetApp.getUi().alert('❌ Лист "' + SHEET_NAME + '" не найден!');
+    return;
+  }
+  
+  const dateFrom = new Date(sheet.getRange('B2').getValue());
+  const dateTo = new Date(sheet.getRange('C2').getValue());
+  
+  if (isNaN(dateFrom.getTime()) || isNaN(dateTo.getTime())) {
+    SpreadsheetApp.getUi().alert('❌ Введите корректные даты в B2 и C2!');
+    return;
+  }
+  
+  const token = PropertiesService.getScriptProperties().getProperty('WB_TOKEN');
+  if (!token) {
+    SpreadsheetApp.getUi().alert('❌ Токен не найден! Запусти setWBToken()');
+    return;
+  }
+  
+  SpreadsheetApp.getUi().alert('⏳ Загружаем данные...\n- Заказы\n- Клики/Корзина\n- Реклама\n- Артикулы продавца');
+  
+  // --- 1. ЗАКАЗЫ ---
+  Logger.log('📊 1. Загружаем заказы...');
+  const orders = fetchWBOrders(dateFrom, token);
+  
+  // --- 2. КЛИКИ И КОРЗИНА ---
+  Logger.log('📊 2. Загружаем клики и корзину...');
+  const detail = fetchAnalytics(dateFrom, dateTo, token);
+  
+  // --- 3. РЕКЛАМА ---
+  Logger.log('📊 3. Загружаем рекламу...');
+  const advCosts = fetchAdvCosts(dateFrom, dateTo, token);
+  
+  // --- 4. ВСЕ VENDORCODE (ОДНИМ ЗАПРОСОМ) ---
+  Logger.log('📊 4. Загружаем артикулы продавца...');
+  const vendorCodes = fetchAllVendorCodes(token);
+  
+  // --- 5. ОБЪЕДИНЯЕМ ---
+  const merged = mergeAllData(orders, detail, advCosts, vendorCodes);
+  
+  if (merged.length === 0) {
+    SpreadsheetApp.getUi().alert('⚠️ Данные не получены. Проверь логи.');
+    return;
+  }
+  
+  // --- 6. ФОРМИРУЕМ ТАБЛИЦУ ---
+  const tableData = merged.map(item => [
+    item.nmId,              // A: Артикул WB (nmId)
+    item.vendorCode || '',  // B: Артикул продавца (vendorCode)
+    item.name,              // C: Название
+    item.orders,            // D: Заказы общие, ₽
+    item.adCost,            // E: Затраты на рекламу, ₽
+    item.drr + '%',         // F: ДРР
+    item.clicks,            // G: Клики Общие
+    item.cart,              // H: Корзина общая
+    item.cr1 + '%',         // I: CR1
+    '',                     // J: Маржинальность
+    '',                     // K: Марж% от продаж
+    '',                     // L: Остаток
+    ''                      // M: Цена полка
+  ]);
+  
+  writeDataToSheet(sheet, tableData);
+  
+  // --- 7. СТАТИСТИКА ---
+  const advCount = merged.filter(i => i.adCost > 0).length;
+  const withClicks = merged.filter(i => i.clicks > 0).length;
+  const totalAdv = merged.reduce((sum, i) => sum + i.adCost, 0);
+  const totalOrders = merged.reduce((sum, i) => sum + i.orders, 0);
+  const withVendorCode = merged.filter(i => i.vendorCode).length;
+  
+  SpreadsheetApp.getUi().alert(
+    '✅ Готово!\n' +
+    '📦 Товаров: ' + tableData.length + '\n' +
+    '🏷️ С vendorCode: ' + withVendorCode + '\n' +
+    '💰 С рекламой: ' + advCount + '\n' +
+    '💰 Общая реклама: ' + Math.round(totalAdv) + ' ₽\n' +
+    '👆 С кликами: ' + withClicks + '\n' +
+    '📦 Общие заказы: ' + Math.round(totalOrders) + ' ₽'
+  );
+}
+
+// ============================================================
+// 3. ЗАПРОС ЗАКАЗОВ
+// ============================================================
+function fetchWBOrders(dateFrom, token) {
+  const from = Utilities.formatDate(dateFrom, SpreadsheetApp.getActive().getSpreadsheetTimeZone(), 'yyyy-MM-dd');
+  const url = `${WB_ORDERS_API}?dateFrom=${from}&limit=1000`;
+  
+  const options = {
+    method: 'GET',
+    headers: { 'Authorization': token },
+    muteHttpExceptions: true
+  };
+  
+  try {
+    const response = UrlFetchApp.fetch(url, options);
+    const data = JSON.parse(response.getContentText());
+    
+    if (!Array.isArray(data)) {
+      Logger.log('⚠️ Orders ошибка: ' + JSON.stringify(data));
+      return {};
+    }
+    
+    const result = {};
+    data.forEach(item => {
+      const nmId = item.nmId;
+      if (!nmId) return;
+      if (!result[nmId]) {
+        result[nmId] = { 
+          nmId: nmId, 
+          name: item.supplierArticle || item.barcode || 'Без названия', 
+          orders: 0 
+        };
+      }
+      result[nmId].orders += item.totalPrice || item.finishedPrice || item.price || 0;
+    });
+    
+    Logger.log('✅ Orders: ' + Object.keys(result).length + ' товаров');
+    return result;
+    
+  } catch (e) {
+    Logger.log('❌ Ошибка Orders: ' + e.message);
+    return {};
+  }
+}
+
+// ============================================================
+// 4. ЗАПРОС К АНАЛИТИКЕ (клики и корзина)
+// ============================================================
+function fetchAnalytics(dateFrom, dateTo, token) {
+  const from = Utilities.formatDate(dateFrom, SpreadsheetApp.getActive().getSpreadsheetTimeZone(), 'yyyy-MM-dd');
+  const to = Utilities.formatDate(dateTo, SpreadsheetApp.getActive().getSpreadsheetTimeZone(), 'yyyy-MM-dd');
+  
+  const payload = {
+    selectedPeriod: { start: from, end: to },
+    limit: 1000,
+    offset: 0
+  };
+  
+  const options = {
+    method: 'POST',
+    headers: {
+      'Authorization': token,
+      'Content-Type': 'application/json'
+    },
+    payload: JSON.stringify(payload),
+    muteHttpExceptions: true
+  };
+  
+  try {
+    Logger.log('📤 Запрос к Analytics API...');
+    const response = UrlFetchApp.fetch(WB_ANALYTICS_API, options);
+    const code = response.getResponseCode();
+    Logger.log('📥 Код ответа: ' + code);
+    
+    if (code !== 200) {
+      Logger.log('⚠️ Ошибка: ' + response.getContentText());
+      return {};
+    }
+    
+    const data = JSON.parse(response.getContentText());
+    const products = data.data?.products || [];
+    Logger.log('✅ Analytics: получено ' + products.length + ' товаров');
+    
+    if (products.length === 0) {
+      Logger.log('⚠️ Нет данных за период');
+      return {};
+    }
+    
+    const result = {};
+    products.forEach(item => {
+      const nmId = item.product?.nmId;
+      if (!nmId) return;
+      
+      const selected = item.statistic?.selected || {};
+      
+      result[nmId] = {
+        nmId: nmId,
+        clicks: selected.openCount || 0,
+        cart: selected.cartCount || 0,
+        ordersSum: selected.orderSum || 0
+      };
+    });
+    
+    const totalClicks = Object.values(result).reduce((sum, i) => sum + i.clicks, 0);
+    const totalCart = Object.values(result).reduce((sum, i) => sum + i.cart, 0);
+    Logger.log('👆 Всего кликов: ' + totalClicks);
+    Logger.log('🛒 Всего корзин: ' + totalCart);
+    
+    return result;
+    
+  } catch (e) {
+    Logger.log('❌ Ошибка Analytics API: ' + e.message);
+    return {};
+  }
+}
+
+// ============================================================
+// 5. ЗАПРОС РЕКЛАМЫ (/upd СО СДВИГОМ -7 ДНЕЙ)
+// ============================================================
+function fetchAdvCosts(dateFrom, dateTo, token) {
+  const advDateFrom = new Date(dateFrom);
+  advDateFrom.setDate(dateFrom.getDate() - 7);
+  const advDateTo = new Date(dateTo);
+  advDateTo.setDate(dateTo.getDate() - 7);
+  
+  const from = Utilities.formatDate(advDateFrom, SpreadsheetApp.getActive().getSpreadsheetTimeZone(), 'yyyy-MM-dd');
+  const to = Utilities.formatDate(advDateTo, SpreadsheetApp.getActive().getSpreadsheetTimeZone(), 'yyyy-MM-dd');
+  
+  Logger.log('📅 Реклама за период (со сдвигом -7 дней): ' + from + ' - ' + to);
+  
+  const options = {
+    method: 'GET',
+    headers: { 'Authorization': token },
+    muteHttpExceptions: true
+  };
+  
+  try {
+    const url = `https://advert-api.wildberries.ru/adv/v1/upd?from=${from}&to=${to}`;
+    const response = UrlFetchApp.fetch(url, options);
+    const code = response.getResponseCode();
+    
+    if (code !== 200) {
+      Logger.log('⚠️ Ошибка /upd: ' + response.getContentText());
+      return {};
+    }
+    
+    const data = JSON.parse(response.getContentText());
+    
+    if (!Array.isArray(data) || data.length === 0) {
+      Logger.log('⚠️ /upd вернул пустой ответ');
+      return {};
+    }
+    
+    Logger.log('✅ /upd: получено ' + data.length + ' записей о затратах');
+    
+    const costsByCampaign = {};
+    data.forEach(item => {
+      const advertId = item.advertId;
+      const sum = item.updSum || 0;
+      if (!costsByCampaign[advertId]) {
+        costsByCampaign[advertId] = 0;
+      }
+      costsByCampaign[advertId] += sum;
+    });
+    
+    const totalAdCost = Object.values(costsByCampaign).reduce((sum, val) => sum + val, 0);
+    Logger.log('💰 Общие затраты на рекламу: ' + totalAdCost + ' ₽');
+    Logger.log('📊 Затраты по ' + Object.keys(costsByCampaign).length + ' кампаниям');
+    
+    const campaignsInfo = fetchCampaignsInfo(token);
+    
+    const result = {};
+    Object.keys(costsByCampaign).forEach(advertId => {
+      const cost = costsByCampaign[advertId];
+      const campaign = campaignsInfo[advertId];
+      if (campaign && campaign.nmIds && campaign.nmIds.length > 0) {
+        const perItem = cost / campaign.nmIds.length;
+        campaign.nmIds.forEach(nmId => {
+          if (!result[nmId]) {
+            result[nmId] = { nmId: nmId, adCost: 0 };
+          }
+          result[nmId].adCost += perItem;
+        });
+      }
+    });
+    
+    Logger.log('📊 Привязано к артикулам: ' + Object.keys(result).length + ' товаров');
+    
+    return { 
+      byCampaign: costsByCampaign, 
+      byNmId: result, 
+      totalAdCost: totalAdCost 
+    };
+    
+  } catch (e) {
+    Logger.log('❌ Ошибка /upd: ' + e.message);
+    return {};
+  }
+}
+
+// ============================================================
+// 6. ИНФОРМАЦИЯ О КАМПАНИЯХ
+// ============================================================
+function fetchCampaignsInfo(token) {
+  const options = {
+    method: 'GET',
+    headers: { 'Authorization': token },
+    muteHttpExceptions: true
+  };
+  
+  try {
+    const url = WB_CAMPAIGNS_INFO_API + '?statuses=4,7,9,11';
+    const response = UrlFetchApp.fetch(url, options);
+    const data = JSON.parse(response.getContentText());
+    
+    const campaigns = data.adverts || [];
+    Logger.log('📢 Всего кампаний: ' + campaigns.length);
+    
+    const result = {};
+    campaigns.forEach(campaign => {
+      const nmIds = [];
+      
+      if (campaign.nm_settings && Array.isArray(campaign.nm_settings)) {
+        campaign.nm_settings.forEach(item => {
+          if (item.nm_id) nmIds.push(item.nm_id);
+        });
+      }
+      
+      if (campaign.nms && Array.isArray(campaign.nms)) {
+        campaign.nms.forEach(item => {
+          if (item.nmId) nmIds.push(item.nmId);
+          else if (typeof item === 'number') nmIds.push(item);
+        });
+      }
+      
+      if (campaign.items && Array.isArray(campaign.items)) {
+        campaign.items.forEach(item => {
+          if (item.nmId) nmIds.push(item.nmId);
+        });
+      }
+      
+      if (campaign.nmIds && Array.isArray(campaign.nmIds)) {
+        campaign.nmIds.forEach(id => nmIds.push(id));
+      }
+      
+      const uniqueNmIds = [...new Set(nmIds)];
+      
+      result[campaign.id] = {
+        advertId: campaign.id,
+        name: campaign.settings?.name || 'Без названия',
+        status: campaign.status,
+        nmIds: uniqueNmIds
+      };
+    });
+    
+    const withNm = Object.values(result).filter(c => c.nmIds.length > 0).length;
+    Logger.log('📊 Кампаний с артикулами: ' + withNm);
+    
+    return result;
+    
+  } catch (e) {
+    Logger.log('⚠️ Ошибка получения кампаний: ' + e.message);
+    return {};
+  }
+}
+
+// ============================================================
+// 7. ПОЛУЧЕНИЕ ВСЕХ VENDORCODE (ОДНИМ ЗАПРОСОМ)
+// ============================================================
+function fetchAllVendorCodes(token) {
+  const options = {
+    method: 'POST',
+    headers: {
+      'Authorization': token,
+      'Content-Type': 'application/json'
+    },
+    payload: JSON.stringify({
+      settings: {
+        cursor: {
+          limit: 1000
+        }
+      }
+    }),
+    muteHttpExceptions: true
+  };
+  
+  try {
+    const url = 'https://content-api.wildberries.ru/content/v2/get/cards/list';
+    Logger.log('📤 Запрашиваем все карточки товаров...');
+    const response = UrlFetchApp.fetch(url, options);
+    const code = response.getResponseCode();
+    
+    if (code !== 200) {
+      Logger.log('⚠️ Ошибка API Контента: ' + response.getContentText());
+      return {};
+    }
+    
+    const data = JSON.parse(response.getContentText());
+    const cards = data.cards || [];
+    Logger.log('✅ Получено карточек: ' + cards.length);
+    
+    const result = {};
+    cards.forEach(card => {
+      const nmId = card.nmID;
+      if (nmId && card.vendorCode) {
+        result[nmId] = card.vendorCode;
+      }
+    });
+    
+    Logger.log('📊 Найдено vendorCode для ' + Object.keys(result).length + ' артикулов');
+    return result;
+    
+  } catch (e) {
+    Logger.log('❌ Ошибка получения vendorCode: ' + e.message);
+    return {};
+  }
+}
+
+// ============================================================
+// 8. СКЛЕИВАНИЕ ВСЕХ ДАННЫХ
+// ============================================================
+function mergeAllData(orders, detail, adv, vendorCodes) {
+  const allIds = new Set();
+  Object.keys(orders).forEach(id => allIds.add(id));
+  Object.keys(detail).forEach(id => allIds.add(id));
+  Object.keys(adv.byNmId || {}).forEach(id => allIds.add(id));
+  
+  const result = [];
+  let totalOrders = 0;
+  
+  Object.keys(orders).forEach(id => {
+    totalOrders += orders[id].orders || 0;
+  });
+  
+  const advByNmId = adv.byNmId || {};
+  const totalAdCost = adv.totalAdCost || 0;
+  
+  allIds.forEach(nmId => {
+    const order = orders[nmId] || {};
+    const det = detail[nmId] || {};
+    
+    let ordersSum = order.orders || 0;
+    if (ordersSum === 0 && det.ordersSum) {
+      ordersSum = det.ordersSum;
+    }
+    
+    const clicks = det.clicks || 0;
+    const cart = det.cart || 0;
+    
+    let adCost = advByNmId[nmId] ? advByNmId[nmId].adCost : 0;
+    if (adCost === 0 && totalOrders > 0) {
+      adCost = (ordersSum / totalOrders) * totalAdCost;
+    }
+    
+    const drr = ordersSum > 0 ? (adCost / ordersSum) * 100 : 0;
+    const cr1 = clicks > 0 ? (cart / clicks) * 100 : 0;
+    
+    const vendorCode = vendorCodes[nmId] || '';
+    
+    result.push({
+      nmId: parseInt(nmId),
+      vendorCode: vendorCode,
+      name: order.name || det.name || vendorCode || 'Без названия',
+      orders: Math.round(ordersSum * 100) / 100,
+      adCost: Math.round(adCost * 100) / 100,
+      drr: Math.round(drr * 100) / 100,
+      clicks: Math.round(clicks * 100) / 100,
+      cart: Math.round(cart * 100) / 100,
+      cr1: Math.round(cr1 * 100) / 100
+    });
+  });
+  
+  result.sort((a, b) => b.orders - a.orders);
+  
+  Logger.log('📊 Итоговый отчет: ' + result.length + ' строк');
+  Logger.log('   💰 Общая реклама: ' + result.reduce((sum, i) => sum + i.adCost, 0));
+  Logger.log('   👆 Общие клики: ' + result.reduce((sum, i) => sum + i.clicks, 0));
+  Logger.log('   🛒 Общая корзина: ' + result.reduce((sum, i) => sum + i.cart, 0));
+  
+  return result;
+}
+
+// ============================================================
+// 9. ЗАПИСЬ В ТАБЛИЦУ
+// ============================================================
+function writeDataToSheet(sheet, data) {
+  const lastRow = sheet.getLastRow();
+  if (lastRow >= 5) {
+    sheet.deleteRows(5, lastRow - 4);
+  }
+  
+  if (data.length === 0) return;
+  
+  const startRow = 5;
+  const numRows = data.length;
+  const numCols = data[0].length;
+  
+  sheet.getRange(startRow, 1, numRows, numCols).setValues(data);
+}
+
+// ============================================================
+// 10. КНОПКА В МЕНЮ
+// ============================================================
+function onOpen() {
+  const ui = SpreadsheetApp.getUi();
+  ui.createMenu('📊 Мои отчеты')
+    .addItem('🔄 Обновить данные (v4.0)', 'main')
+    .addToUi();
+}
+
+// ============================================================
+// 11. ТЕСТЫ ДЛЯ ОТЛАДКИ
+// ============================================================
+
+function testAllCardsVendorCodes() {
+  const token = PropertiesService.getScriptProperties().getProperty('WB_TOKEN');
+  if (!token) {
+    Logger.log('❌ Токен не найден');
+    return;
+  }
+  
+  const options = {
+    method: 'POST',
+    headers: {
+      'Authorization': token,
+      'Content-Type': 'application/json'
+    },
+    payload: JSON.stringify({
+      settings: {
+        cursor: {
+          limit: 1000
+        }
+      }
+    }),
+    muteHttpExceptions: true
+  };
+  
+  try {
+    const url = 'https://content-api.wildberries.ru/content/v2/get/cards/list';
+    Logger.log('📤 Запрашиваем все карточки...');
+    const response = UrlFetchApp.fetch(url, options);
+    const code = response.getResponseCode();
+    Logger.log('📥 Код ответа: ' + code);
+    
+    if (code !== 200) {
+      Logger.log('⚠️ Ошибка: ' + response.getContentText());
+      return;
+    }
+    
+    const data = JSON.parse(response.getContentText());
+    const cards = data.cards || [];
+    Logger.log('✅ Получено карточек: ' + cards.length);
+    
+    const vendorMap = {};
+    cards.forEach(card => {
+      const nmId = card.nmID;
+      if (nmId && card.vendorCode) {
+        vendorMap[nmId] = card.vendorCode;
+      }
+    });
+    
+    Logger.log('📊 Найдено vendorCode для ' + Object.keys(vendorMap).length + ' артикулов');
+    
+    const sample = Object.keys(vendorMap).slice(0, 5);
+    sample.forEach(nmId => {
+      Logger.log('   nmId: ' + nmId + ' → vendorCode: ' + vendorMap[nmId]);
+    });
+    
+    const testNmId = 158868824;
+    if (vendorMap[testNmId]) {
+      Logger.log('✅ Найден vendorCode для ' + testNmId + ': ' + vendorMap[testNmId]);
+    } else {
+      Logger.log('⚠️ vendorCode для ' + testNmId + ' не найден');
+    }
+    
+    return vendorMap;
+    
+  } catch (e) {
+    Logger.log('❌ Ошибка: ' + e.message);
+    return {};
+  }
+}
+
+function testCampaignsCount() {
+  const token = PropertiesService.getScriptProperties().getProperty('WB_TOKEN');
+  if (!token) {
+    Logger.log('❌ Токен не найден');
+    return;
+  }
+  
+  const options = {
+    method: 'GET',
+    headers: { 'Authorization': token },
+    muteHttpExceptions: true
+  };
+  
+  try {
+    const countUrl = 'https://advert-api.wildberries.ru/adv/v1/promotion/count';
+    const countResponse = UrlFetchApp.fetch(countUrl, options);
+    const countData = JSON.parse(countResponse.getContentText());
+    
+    Logger.log('📊 Общее количество кампаний: ' + countData.all);
+    countData.adverts.forEach(group => {
+      Logger.log('   Тип ' + group.type + ', статус ' + group.status + ': ' + group.count + ' шт.');
+    });
+    
+    const active = countData.adverts.filter(g => g.status === 9);
+    if (active.length > 0) {
+      Logger.log('✅ Активных кампаний (статус 9): ' + active.reduce((sum, g) => sum + g.count, 0));
+    }
+    
+  } catch (e) {
+    Logger.log('❌ Ошибка: ' + e.message);
+  }
+}
+
+function testUpd() {
+  const token = PropertiesService.getScriptProperties().getProperty('WB_TOKEN');
+  if (!token) {
+    Logger.log('❌ Токен не найден');
+    return;
+  }
+  
+  const today = new Date();
+  const monthAgo = new Date(today);
+  monthAgo.setDate(today.getDate() - 30);
+  
+  const from = Utilities.formatDate(monthAgo, SpreadsheetApp.getActive().getSpreadsheetTimeZone(), 'yyyy-MM-dd');
+  const to = Utilities.formatDate(today, SpreadsheetApp.getActive().getSpreadsheetTimeZone(), 'yyyy-MM-dd');
+  
+  const options = {
+    method: 'GET',
+    headers: { 'Authorization': token },
+    muteHttpExceptions: true
+  };
+  
+  try {
+    const url = `https://advert-api.wildberries.ru/adv/v1/upd?from=${from}&to=${to}`;
+    Logger.log('📤 Запрос к /upd...');
+    const response = UrlFetchApp.fetch(url, options);
+    Logger.log('📥 Код: ' + response.getResponseCode());
+    
+    const data = JSON.parse(response.getContentText());
+    if (Array.isArray(data)) {
+      let totalSum = 0;
+      data.forEach(item => {
+        totalSum += item.updSum || 0;
+      });
+      Logger.log('💰 Общая сумма затрат за период: ' + totalSum + ' ₽');
+      Logger.log('📊 Количество записей: ' + data.length);
+    }
+    
+  } catch (e) {
+    Logger.log('❌ Ошибка: ' + e.message);
+  }
+}
