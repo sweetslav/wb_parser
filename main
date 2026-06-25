@@ -151,74 +151,97 @@ function fetchWBOrders(dateFrom, token) {
 }
 
 // ============================================================
-// 4. ЗАПРОС К АНАЛИТИКЕ (клики и корзина)
+// 4. ЗАПРОС К АНАЛИТИКЕ (с пагинацией)
 // ============================================================
 function fetchAnalytics(dateFrom, dateTo, token) {
   const from = Utilities.formatDate(dateFrom, SpreadsheetApp.getActive().getSpreadsheetTimeZone(), 'yyyy-MM-dd');
   const to = Utilities.formatDate(dateTo, SpreadsheetApp.getActive().getSpreadsheetTimeZone(), 'yyyy-MM-dd');
   
-  const payload = {
-    selectedPeriod: { start: from, end: to },
-    limit: 1000,
-    offset: 0
-  };
+  let allProducts = [];
+  let offset = 0;
+  const limit = 1000;
+  let hasMore = true;
   
-  const options = {
-    method: 'POST',
-    headers: {
-      'Authorization': token,
-      'Content-Type': 'application/json'
-    },
-    payload: JSON.stringify(payload),
-    muteHttpExceptions: true
-  };
+  while (hasMore) {
+    const payload = {
+      selectedPeriod: { start: from, end: to },
+      limit: limit,
+      offset: offset
+    };
+    
+    const options = {
+      method: 'POST',
+      headers: {
+        'Authorization': token,
+        'Content-Type': 'application/json'
+      },
+      payload: JSON.stringify(payload),
+      muteHttpExceptions: true
+    };
+    
+    try {
+      const response = UrlFetchApp.fetch(WB_ANALYTICS_API, options);
+      const code = response.getResponseCode();
+      
+      if (code !== 200) {
+        Logger.log('⚠️ Ошибка Analytics API: ' + response.getContentText());
+        break;
+      }
+      
+      const data = JSON.parse(response.getContentText());
+      const products = data.data?.products || [];
+      
+      if (products.length === 0) {
+        hasMore = false;
+        break;
+      }
+      
+      allProducts = allProducts.concat(products);
+      Logger.log('📦 Загружено ' + allProducts.length + ' товаров');
+      
+      // Если пришло меньше, чем limit — значит, это последняя страница
+      if (products.length < limit) {
+        hasMore = false;
+      } else {
+        offset += limit;
+        // Небольшая пауза между запросами, чтобы не превысить лимиты
+        Utilities.sleep(200);
+      }
+      
+    } catch (e) {
+      Logger.log('❌ Ошибка Analytics API: ' + e.message);
+      hasMore = false;
+    }
+  }
   
-  try {
-    Logger.log('📤 Запрос к Analytics API...');
-    const response = UrlFetchApp.fetch(WB_ANALYTICS_API, options);
-    const code = response.getResponseCode();
-    Logger.log('📥 Код ответа: ' + code);
-    
-    if (code !== 200) {
-      Logger.log('⚠️ Ошибка: ' + response.getContentText());
-      return {};
-    }
-    
-    const data = JSON.parse(response.getContentText());
-    const products = data.data?.products || [];
-    Logger.log('✅ Analytics: получено ' + products.length + ' товаров');
-    
-    if (products.length === 0) {
-      Logger.log('⚠️ Нет данных за период');
-      return {};
-    }
-    
-    const result = {};
-    products.forEach(item => {
-      const nmId = item.product?.nmId;
-      if (!nmId) return;
-      
-      const selected = item.statistic?.selected || {};
-      
-      result[nmId] = {
-        nmId: nmId,
-        clicks: selected.openCount || 0,
-        cart: selected.cartCount || 0,
-        ordersSum: selected.orderSum || 0
-      };
-    });
-    
-    const totalClicks = Object.values(result).reduce((sum, i) => sum + i.clicks, 0);
-    const totalCart = Object.values(result).reduce((sum, i) => sum + i.cart, 0);
-    Logger.log('👆 Всего кликов: ' + totalClicks);
-    Logger.log('🛒 Всего корзин: ' + totalCart);
-    
-    return result;
-    
-  } catch (e) {
-    Logger.log('❌ Ошибка Analytics API: ' + e.message);
+  Logger.log('✅ Analytics: итого получено ' + allProducts.length + ' товаров');
+  
+  if (allProducts.length === 0) {
+    Logger.log('⚠️ Нет данных за период');
     return {};
   }
+  
+  const result = {};
+  allProducts.forEach(item => {
+    const nmId = item.product?.nmId;
+    if (!nmId) return;
+    
+    const selected = item.statistic?.selected || {};
+    
+    result[nmId] = {
+      nmId: nmId,
+      clicks: selected.openCount || 0,
+      cart: selected.cartCount || 0,
+      ordersSum: selected.orderSum || 0
+    };
+  });
+  
+  const totalClicks = Object.values(result).reduce((sum, i) => sum + i.clicks, 0);
+  const totalCart = Object.values(result).reduce((sum, i) => sum + i.cart, 0);
+  Logger.log('👆 Всего кликов: ' + totalClicks);
+  Logger.log('🛒 Всего корзин: ' + totalCart);
+  
+  return result;
 }
 
 // ============================================================
@@ -242,16 +265,17 @@ function fetchAdvCosts(dateFrom, dateTo, token) {
   };
   
   try {
-    const url = `https://advert-api.wildberries.ru/adv/v1/upd?from=${from}&to=${to}`;
-    const response = UrlFetchApp.fetch(url, options);
-    const code = response.getResponseCode();
+    // 1. Получаем все затраты из /upd
+    const updUrl = `https://advert-api.wildberries.ru/adv/v1/upd?from=${from}&to=${to}`;
+    const updResponse = UrlFetchApp.fetch(updUrl, options);
+    const code = updResponse.getResponseCode();
     
     if (code !== 200) {
-      Logger.log('⚠️ Ошибка /upd: ' + response.getContentText());
+      Logger.log('⚠️ Ошибка /upd: ' + updResponse.getContentText());
       return {};
     }
     
-    const data = JSON.parse(response.getContentText());
+    const data = JSON.parse(updResponse.getContentText());
     
     if (!Array.isArray(data) || data.length === 0) {
       Logger.log('⚠️ /upd вернул пустой ответ');
@@ -260,6 +284,7 @@ function fetchAdvCosts(dateFrom, dateTo, token) {
     
     Logger.log('✅ /upd: получено ' + data.length + ' записей о затратах');
     
+    // Суммируем затраты по кампаниям
     const costsByCampaign = {};
     data.forEach(item => {
       const advertId = item.advertId;
@@ -274,12 +299,17 @@ function fetchAdvCosts(dateFrom, dateTo, token) {
     Logger.log('💰 Общие затраты на рекламу: ' + totalAdCost + ' ₽');
     Logger.log('📊 Затраты по ' + Object.keys(costsByCampaign).length + ' кампаниям');
     
+    // 2. Получаем информацию о кампаниях для привязки к артикулам
     const campaignsInfo = fetchCampaignsInfo(token);
     
+    // 3. Сопоставляем затраты с артикулами
     const result = {};
+    let assignedCount = 0;
+    
     Object.keys(costsByCampaign).forEach(advertId => {
       const cost = costsByCampaign[advertId];
       const campaign = campaignsInfo[advertId];
+      
       if (campaign && campaign.nmIds && campaign.nmIds.length > 0) {
         const perItem = cost / campaign.nmIds.length;
         campaign.nmIds.forEach(nmId => {
@@ -287,11 +317,13 @@ function fetchAdvCosts(dateFrom, dateTo, token) {
             result[nmId] = { nmId: nmId, adCost: 0 };
           }
           result[nmId].adCost += perItem;
+          assignedCount++;
         });
       }
     });
     
     Logger.log('📊 Привязано к артикулам: ' + Object.keys(result).length + ' товаров');
+    Logger.log('📊 Всего привязок: ' + assignedCount);
     
     return { 
       byCampaign: costsByCampaign, 
@@ -372,45 +404,60 @@ function fetchCampaignsInfo(token) {
 }
 
 // ============================================================
-// 7. ПОЛУЧЕНИЕ ВСЕХ VENDORCODE (ОДНИМ ЗАПРОСОМ)
+// 7. ПОЛУЧЕНИЕ ВСЕХ VENDORCODE (ЧЕРЕЗ API ЦЕН И СКИДОК)
 // ============================================================
 function fetchAllVendorCodes(token) {
   const options = {
-    method: 'POST',
-    headers: {
-      'Authorization': token,
-      'Content-Type': 'application/json'
-    },
-    payload: JSON.stringify({
-      settings: {
-        cursor: {
-          limit: 1000
-        }
-      }
-    }),
+    method: 'GET',
+    headers: { 'Authorization': token },
     muteHttpExceptions: true
   };
   
+  let allGoods = [];
+  let offset = 0;
+  const limit = 1000;
+  let hasMore = true;
+  
   try {
-    const url = 'https://content-api.wildberries.ru/content/v2/get/cards/list';
-    Logger.log('📤 Запрашиваем все карточки товаров...');
-    const response = UrlFetchApp.fetch(url, options);
-    const code = response.getResponseCode();
-    
-    if (code !== 200) {
-      Logger.log('⚠️ Ошибка API Контента: ' + response.getContentText());
-      return {};
+    while (hasMore) {
+      const url = `https://discounts-prices-api.wildberries.ru/api/v2/list/goods/filter?limit=${limit}&offset=${offset}`;
+      Logger.log('📤 Запрашиваем товары (offset ' + offset + ')...');
+      
+      const response = UrlFetchApp.fetch(url, options);
+      const code = response.getResponseCode();
+      
+      if (code !== 200) {
+        Logger.log('⚠️ Ошибка API Цен: ' + response.getContentText());
+        break;
+      }
+      
+      const data = JSON.parse(response.getContentText());
+      const goods = data.data?.listGoods || [];
+      
+      if (goods.length === 0) {
+        hasMore = false;
+        break;
+      }
+      
+      allGoods = allGoods.concat(goods);
+      Logger.log('📦 Загружено ' + allGoods.length + ' товаров');
+      
+      if (goods.length < limit) {
+        hasMore = false;
+      } else {
+        offset += limit;
+        Utilities.sleep(200);
+      }
     }
     
-    const data = JSON.parse(response.getContentText());
-    const cards = data.cards || [];
-    Logger.log('✅ Получено карточек: ' + cards.length);
+    Logger.log('✅ Всего получено товаров: ' + allGoods.length);
     
     const result = {};
-    cards.forEach(card => {
-      const nmId = card.nmID;
-      if (nmId && card.vendorCode) {
-        result[nmId] = card.vendorCode;
+    allGoods.forEach(item => {
+      // ВНИМАНИЕ: в API Цен поле называется nmID (с большой D)!
+      const nmId = item.nmID;
+      if (nmId && item.vendorCode) {
+        result[nmId] = item.vendorCode;
       }
     });
     
