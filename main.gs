@@ -1,13 +1,14 @@
 // ============================================================
-// ВЕРСИЯ 6.4 - С ПРОГРЕССОМ В ТАБЛИЦЕ (СТРОКА 3)
+// ВЕРСИЯ 7.0 - ПОЛНАЯ ИНТЕГРАЦИЯ С ФИНАНСОВЫМИ ОТЧЕТАМИ
 // ============================================================
 
 // API эндпоинты
 const WB_ORDERS_API = 'https://statistics-api.wildberries.ru/api/v1/supplier/orders';
 const WB_ANALYTICS_API = 'https://seller-analytics-api.wildberries.ru/api/analytics/v3/sales-funnel/products';
 const WB_CAMPAIGNS_INFO_API = 'https://advert-api.wildberries.ru/api/advert/v2/adverts';
+const WB_FINANCE_API = 'https://finance-api.wildberries.ru/api/finance/v1/sales-reports/detailed';
 
-// Задержки между запросами (в миллисекундах)
+// Задержки между запросами
 const DELAYS = {
   BETWEEN_PAGES: 500,
   BETWEEN_APIS: 1000,
@@ -22,12 +23,12 @@ const CONFIGS = {
   cab1: {
     sheetName: 'adv_effectiveness',
     tokenKey: 'WB_TOKEN',
-    label: 'Кабинет 1'
+    label: 'Кабинет 1"'
   },
   cab2: {
     sheetName: 'adv_effectiveness_2',
     tokenKey: 'WB_TOKEN_2',
-    label: 'Кабинет 2'
+    label: 'Кабинет 2"'
   }
 };
 
@@ -91,7 +92,7 @@ function mainAll() {
 }
 
 // ============================================================
-// 4. УНИВЕРСАЛЬНАЯ ФУНКЦИЯ ДЛЯ ЛЮБОГО КАБИНЕТА (С ПРОГРЕССОМ)
+// 4. УНИВЕРСАЛЬНАЯ ФУНКЦИЯ ДЛЯ ЛЮБОГО КАБИНЕТА
 // ============================================================
 function runForCabinet(cabinetId) {
   const startTime = new Date();
@@ -104,7 +105,7 @@ function runForCabinet(cabinetId) {
     return;
   }
   
-  // --- ФУНКЦИЯ ДЛЯ ОБНОВЛЕНИЯ СТАТУСА (В СТРОКЕ 3) ---
+  // --- ФУНКЦИИ ДЛЯ СТАТУСА (СТРОКА 3) ---
   function setStatus(text, color) {
     try {
       sheet.getRange('A3').setValue('🔄 ' + text);
@@ -125,9 +126,9 @@ function runForCabinet(cabinetId) {
   
   // --- ИНИЦИАЛИЗАЦИЯ ---
   setStatus('Запуск...', '#FFF3CD');
-  setProgress(0, 5, 'Подготовка...');
+  setProgress(0, 7, 'Подготовка...');
   
-  // Парсинг дат (B2 и C2 не трогаем)
+  // Парсинг дат
   const dateFromRaw = sheet.getRange('B2').getValue();
   const dateToRaw = sheet.getRange('C2').getValue();
   let dateFrom, dateTo;
@@ -154,7 +155,7 @@ function runForCabinet(cabinetId) {
   Logger.log('🚀 ===== СТАРТ: ' + config.label + ' =====');
   
   const errors = [];
-  let totalSteps = 5;
+  const totalSteps = 7;
   let currentStep = 0;
   
   try {
@@ -198,7 +199,7 @@ function runForCabinet(cabinetId) {
     Utilities.sleep(300);
     SpreadsheetApp.flush();
     
-    // --- ШАГ 5: ОСТАТКИ ---
+    // --- ШАГ 5: ОСТАТКИ + СЕБЕСТОИМОСТЬ ---
     currentStep++;
     setProgress(currentStep, totalSteps, 'Остатки...');
     setStatus('Загрузка остатков (5/' + totalSteps + ')', '#FFF3CD');
@@ -208,35 +209,44 @@ function runForCabinet(cabinetId) {
     Utilities.sleep(300);
     SpreadsheetApp.flush();
     
-    // --- ОБЪЕДИНЕНИЕ ---
-    setStatus('Объединение данных...', '#FFF3CD');
-    setProgress(5, 5, 'Объединение...');
-    Logger.log('📊 Объединяем данные...');
-    const merged = mergeAllData(orders, detail, advCosts, vendorCodes, stockData);
+    // --- ШАГ 6: ФИНАНСЫ ---
+    currentStep++;
+    setProgress(currentStep, totalSteps, 'Финансы...');
+    setStatus('Загрузка финансов (6/' + totalSteps + ')', '#FFF3CD');
+    Logger.log('📊 6/' + totalSteps + ' Загружаем финансы...');
+    const financialData = fetchFinancialData(dateFrom, dateTo, token);
+    if (Object.keys(financialData).length === 0) errors.push('Финансы не загружены');
+    Utilities.sleep(300);
     SpreadsheetApp.flush();
     
-    // --- ЗАПИСЬ ---
+    // --- ШАГ 7: ОБЪЕДИНЕНИЕ И ЗАПИСЬ ---
+    currentStep++;
+    setProgress(currentStep, totalSteps, 'Объединение...');
+    setStatus('Объединение данных (7/' + totalSteps + ')', '#FFF3CD');
+    Logger.log('📊 7/' + totalSteps + ' Объединяем данные...');
+    
+    const merged = mergeAllData(orders, detail, advCosts, vendorCodes, stockData, financialData);
+    SpreadsheetApp.flush();
+    
     setStatus('Запись в таблицу...', '#FFF3CD');
-    Logger.log('📊 Записываем данные...');
     writeDataToSheet(sheet, merged);
     SpreadsheetApp.flush();
     
     // --- ФИНИШ ---
     const elapsedSeconds = Math.round((new Date() - startTime) / 1000);
     const totalItems = merged.length;
-    const withAd = merged.filter(i => i.hasAd).length;
-    const withOrders = merged.filter(i => i.orders > 0).length;
+    const withAd = merged.filter(i => i.adCost > 0).length;
+    const withOrders = merged.filter(i => i.ordersSum > 0).length;
     const totalAdCost = merged.reduce((sum, i) => sum + i.adCost, 0);
-    const totalOrders = merged.reduce((sum, i) => sum + i.orders, 0);
+    const totalOrders = merged.reduce((sum, i) => sum + i.ordersSum, 0);
+    const totalRealization = merged.reduce((sum, i) => sum + i.totalRealization, 0);
     
-    // Обновляем статус в строке 3
     const statusText = '✅ Готово! ' + totalItems + ' товаров, ' + elapsedSeconds + ' сек';
     setStatus(statusText, '#D4EDDA');
     sheet.getRange('B3').setValue('✅ Завершено');
     sheet.getRange('C3').setValue(new Date().toLocaleTimeString());
     SpreadsheetApp.flush();
     
-    // Показываем алерт
     const message = '✅ ' + config.label + ' готов!\n' +
       '⏱️ ' + elapsedSeconds + ' сек\n' +
       '📦 Товаров: ' + totalItems + '\n' +
@@ -244,10 +254,11 @@ function runForCabinet(cabinetId) {
       '📦 С заказами: ' + withOrders + '\n' +
       '💰 Общая реклама: ' + Math.round(totalAdCost) + ' ₽\n' +
       '📦 Общие заказы: ' + Math.round(totalOrders) + ' ₽\n' +
+      '💰 Реализация: ' + Math.round(totalRealization) + ' ₽\n' +
       (errors.length > 0 ? '\n⚠️ Ошибки: ' + errors.join(', ') : '');
     
     SpreadsheetApp.getUi().alert(message);
-    Logger.log('✅ ===== ФИНИШ: ' + config.label + ' =====');
+    Logger.log('✅ ===== ФИНИШ: ' + config.label + ' (' + elapsedSeconds + ' сек) =====');
     
   } catch (e) {
     setStatus('❌ Ошибка: ' + e.message, '#F8D7DA');
@@ -528,7 +539,7 @@ function fetchAllVendorCodes(token) {
 }
 
 // ============================================================
-// 10. ПОЛУЧЕНИЕ ОСТАТКОВ
+// 10. ПОЛУЧЕНИЕ ОСТАТКОВ И СЕБЕСТОИМОСТИ
 // ============================================================
 function fetchStockData() {
   try {
@@ -549,7 +560,7 @@ function fetchStockData() {
     let foundCount = 0;
     
     values.forEach(row => {
-      const nmIdRaw = row[12]; // M
+      const nmIdRaw = row[12];
       let nmIdNum = null;
       const type = typeof nmIdRaw;
       
@@ -565,13 +576,15 @@ function fetchStockData() {
       
       if (!nmIdNum || isNaN(nmIdNum) || nmIdNum === 0) return;
       
-      const fbw = Number(row[25]) || 0;   // Z
-      const fbs = Number(row[28]) || 0;   // AC
+      const fbw = Number(row[25]) || 0;
+      const fbs = Number(row[28]) || 0;
+      const costPrice = Number(row[24]) || 0;
       
       stockData[nmIdNum] = {
         fbw: fbw,
         fbs: fbs,
-        total: fbw + fbs
+        total: fbw + fbs,
+        costPrice: costPrice
       };
       foundCount++;
     });
@@ -585,65 +598,357 @@ function fetchStockData() {
 }
 
 // ============================================================
-// 11. СКЛЕИВАНИЕ ДАННЫХ
+// 11. ПОЛУЧЕНИЕ ФИНАНСОВЫХ ДАННЫХ
 // ============================================================
-function mergeAllData(orders, detail, adv, vendorCodes, stockData) {
+function fetchFinancialData(dateFrom, dateTo, token) {
+  Logger.log('📊 Загружаем финансовые данные...');
+  
+  try {
+    let allRows = [];
+    let rrdId = 0;
+    let hasMore = true;
+    let attempt = 0;
+    const maxAttempts = 100;
+    
+    while (hasMore && attempt < maxAttempts) {
+      attempt++;
+      
+      const payload = {
+        dateFrom: formatDate(dateFrom),
+        dateTo: formatDate(dateTo),
+        limit: 100000,
+        rrdId: rrdId,
+        period: 'weekly'
+      };
+      
+      const options = {
+        method: 'POST',
+        headers: {
+          'Authorization': token,
+          'Content-Type': 'application/json'
+        },
+        payload: JSON.stringify(payload),
+        muteHttpExceptions: true
+      };
+      
+      const response = UrlFetchApp.fetch(WB_FINANCE_API, options);
+      const code = response.getResponseCode();
+      
+      if (code === 204) {
+        hasMore = false;
+        break;
+      }
+      
+      if (code !== 200) {
+        Logger.log('⚠️ Ошибка финансов: ' + code);
+        hasMore = false;
+        break;
+      }
+      
+      const data = JSON.parse(response.getContentText());
+      
+      if (!Array.isArray(data) || data.length === 0) {
+        hasMore = false;
+        break;
+      }
+      
+      allRows = allRows.concat(data);
+      
+      if (data.length < 100000) {
+        hasMore = false;
+      } else {
+        const lastRow = data[data.length - 1];
+        rrdId = lastRow.rrdId || 0;
+        if (rrdId === 0) hasMore = false;
+      }
+      
+      Utilities.sleep(300);
+    }
+    
+    if (allRows.length === 0) {
+      Logger.log('❌ Нет финансовых данных');
+      return {};
+    }
+    
+    Logger.log('📊 Финансы: ' + allRows.length + ' строк');
+    
+    // Агрегируем
+    const aggregated = aggregateFinancialData(allRows);
+    Logger.log('✅ Финансы агрегированы: ' + Object.keys(aggregated).length + ' товаров');
+    
+    return aggregated;
+    
+  } catch (e) {
+    Logger.log('❌ Ошибка финансов: ' + e.message);
+    return {};
+  }
+}
+
+// ============================================================
+// 12. АГРЕГАЦИЯ ФИНАНСОВЫХ ДАННЫХ
+// ============================================================
+function aggregateFinancialData(rows) {
+  const result = {};
+  
+  rows.forEach(row => {
+    const nmId = row.nmId;
+    const docType = row.docTypeName || '';
+    const sellerOperName = row.sellerOperName || '';
+    const quantity = Number(row.quantity) || 0;
+    
+    const retailPrice = Number(row.retailPrice) || 0;
+    const retailAmount = Number(row.retailAmount) || 0;
+    const commission = Number(row.ppvzSalesCommission) || 0;
+    const delivery = Number(row.deliveryService) || 0;
+    const storage = Number(row.paidStorage) || 0;
+    const penalty = Number(row.penalty) || 0;
+    const deduction = Number(row.deduction) || 0;
+    const acceptance = Number(row.paidAcceptance) || 0;
+    const additionalPayment = Number(row.additionalPayment) || 0;
+    const rebillLogistic = Number(row.rebillLogisticCost) || 0;
+    const forPay = Number(row.forPay) || 0;
+    const cashbackDiscount = Number(row.cashbackDiscount) || 0;
+    const cashbackAmount = Number(row.cashbackAmount) || 0;
+    const cashbackCommission = Number(row.cashbackCommissionChange) || 0;
+    
+    const isSale = docType === 'Продажа';
+    const isReturn = docType === 'Возврат';
+    
+    // Если нет nmId - суммируем общие расходы
+    if (!nmId) {
+      // Для общих расходов создаем специальный ключ 'total'
+      if (!result['total']) {
+        result['total'] = {
+          nmId: 'total',
+          salesRetailPrice: 0,
+          salesRetailAmount: 0,
+          returnsRetailPrice: 0,
+          returnsRetailAmount: 0,
+          quantitySales: 0,
+          quantityReturns: 0,
+          commission: 0,
+          logistics: 0,
+          storage: 0,
+          penalty: 0,
+          deduction: 0,
+          acceptance: 0,
+          additionalPayment: 0,
+          rebillLogistic: 0,
+          forPay: 0,
+          cashbackDiscount: 0,
+          cashbackAmount: 0,
+          cashbackCommission: 0
+        };
+      }
+      const d = result['total'];
+      d.logistics += delivery;
+      d.storage += storage;
+      d.penalty += penalty;
+      d.deduction += deduction;
+      d.acceptance += acceptance;
+      d.additionalPayment += additionalPayment;
+      d.rebillLogistic += rebillLogistic;
+      return;
+    }
+    
+    if (!result[nmId]) {
+      result[nmId] = {
+        nmId: nmId,
+        salesRetailPrice: 0,
+        salesRetailAmount: 0,
+        returnsRetailPrice: 0,
+        returnsRetailAmount: 0,
+        quantitySales: 0,
+        quantityReturns: 0,
+        commission: 0,
+        logistics: 0,
+        storage: 0,
+        penalty: 0,
+        deduction: 0,
+        acceptance: 0,
+        additionalPayment: 0,
+        rebillLogistic: 0,
+        forPay: 0,
+        cashbackDiscount: 0,
+        cashbackAmount: 0,
+        cashbackCommission: 0
+      };
+    }
+    
+    const d = result[nmId];
+    
+    if (isSale) {
+      d.salesRetailPrice += retailPrice;
+      d.salesRetailAmount += retailAmount;
+      d.quantitySales += quantity;
+      d.commission += commission;
+      d.forPay += forPay;
+      d.cashbackDiscount += cashbackDiscount;
+      d.cashbackAmount += cashbackAmount;
+      d.cashbackCommission += cashbackCommission;
+    } else if (isReturn) {
+      d.returnsRetailPrice += retailPrice;
+      d.returnsRetailAmount += retailAmount;
+      d.quantityReturns += quantity;
+      d.commission -= commission;
+      d.forPay -= forPay;
+      d.cashbackDiscount -= cashbackDiscount;
+      d.cashbackAmount -= cashbackAmount;
+      d.cashbackCommission -= cashbackCommission;
+    } else {
+      // Расходы (логистика, хранение, штрафы и т.д.)
+      d.logistics += delivery;
+      d.storage += storage;
+      d.penalty += penalty;
+      d.deduction += deduction;
+      d.acceptance += acceptance;
+      d.additionalPayment += additionalPayment;
+      d.rebillLogistic += rebillLogistic;
+    }
+  });
+  
+  // Удаляем пустые
+  Object.keys(result).forEach(key => {
+    const d = result[key];
+    if (d.salesRetailAmount === 0 && d.returnsRetailAmount === 0 && 
+        d.logistics === 0 && d.storage === 0 && d.penalty === 0 && d.deduction === 0) {
+      delete result[key];
+    }
+  });
+  
+  return result;
+}
+
+// ============================================================
+// 13. СКЛЕИВАНИЕ ВСЕХ ДАННЫХ (ИСПРАВЛЕННАЯ)
+// ============================================================
+function mergeAllData(orders, detail, adv, vendorCodes, stockData, financialData) {
   const allIds = new Set();
   Object.keys(detail).forEach(id => allIds.add(Number(id)));
   Object.keys(orders).forEach(id => allIds.add(Number(id)));
   Object.keys(adv.byNmId || {}).forEach(id => allIds.add(Number(id)));
   
-  if (allIds.size === 0) { Logger.log('⚠️ Нет данных'); return []; }
+  if (allIds.size === 0) { Logger.log('⚠️ Нет данных для объединения'); return []; }
   
   const result = [];
+  
   allIds.forEach(id => {
     const nmId = Number(id);
     const order = orders[nmId] || {};
     const det = detail[nmId] || {};
     const advData = adv.byNmId ? adv.byNmId[nmId] : null;
     const stock = stockData ? stockData[nmId] : null;
+    const fin = financialData ? financialData[nmId] : null;
     
+    // --- ИЗ АНАЛИТИКИ ---
     const ordersSum = det.ordersSum || 0;
     const clicks = det.clicks || 0;
     const cart = det.cart || 0;
     const vendorCode = vendorCodes[nmId] || '';
     
-    let adCost = 0, hasAd = false;
-    if (advData && advData.adCost > 0) { adCost = advData.adCost; hasAd = true; }
+    // --- ИЗ РЕКЛАМЫ ---
+    let adCost = 0;
+    if (advData && advData.adCost > 0) {
+      adCost = advData.adCost;
+    }
     
-    const fbw = (stock && typeof stock.fbw === 'number') ? stock.fbw : 0;
-    const fbs = (stock && typeof stock.fbs === 'number') ? stock.fbs : 0;
-    const total = (stock && typeof stock.total === 'number') ? stock.total : 0;
+    // --- ИЗ ФИНАНСОВ ---
+    // ✅ ИСПРАВЛЕНО:
+    // totalSales = retailPrice (Реализация до СПП)
+    const totalSales = fin ? (fin.salesRetailPrice - fin.returnsRetailPrice) : 0;
     
+    // totalRealization = retailAmount (Продажи после СПП)
+    const totalRealization = fin ? (fin.salesRetailAmount - fin.returnsRetailAmount) : 0;
+    
+    const totalQuantitySales = fin ? fin.quantitySales : 0;
+    const totalQuantity = fin ? (fin.quantitySales - fin.quantityReturns) : 0;
+    const totalCommission = fin ? fin.commission : 0;
+    const totalLogistics = fin ? fin.logistics : 0;
+    const totalStorage = fin ? fin.storage : 0;
+    const totalPenalty = fin ? fin.penalty : 0;
+    const totalDeduction = fin ? fin.deduction : 0;
+    const totalAcceptance = fin ? fin.acceptance : 0;
+    const totalAdditionalPayment = fin ? fin.additionalPayment : 0;
+    const totalRebillLogistic = fin ? fin.rebillLogistic : 0;
+    
+    // --- ИЗ СПРАВОЧНИКА ---
+    const fbw = stock ? stock.fbw : 0;
+    const fbs = stock ? stock.fbs : 0;
+    const totalStock = stock ? stock.total : 0;
+    const costPrice = stock ? stock.costPrice : 0;
+    
+    // --- РАСЧЕТЫ ---
+    // Цена полки = Продажи после СПП / Количество продаж
+    const shelfPrice = totalQuantitySales > 0 ? Math.round(totalRealization / totalQuantitySales) : 0;
+    
+    // Себестоимость = себест100 × Количество продаж
+    const totalCostPrice = costPrice * totalQuantitySales;
+    
+    // Компенсации
+    const totalCompensations = totalAdditionalPayment + totalRebillLogistic;
+    
+    // ДРР
     let drr = 0;
-    if (hasAd && ordersSum > 0) drr = (adCost / ordersSum) * 100;
-    else if (hasAd && ordersSum === 0) drr = 100;
+    if (adCost > 0 && ordersSum > 0) {
+      drr = (adCost / ordersSum) * 100;
+    } else if (adCost > 0 && ordersSum === 0) {
+      drr = 100;
+    }
     
+    // CR1
     const cr1 = clicks > 0 ? (cart / clicks) * 100 : 0;
+    
+    // --- ВАЛОВАЯ МАРЖА ---
+    // Продажи после СПП - Себестоимость - Логистика - Комиссия - Штрафы - Хранение - Удержания - Приемка - Реклама + Компенсации
+    const grossMargin = totalRealization 
+      - totalCostPrice 
+      - totalLogistics 
+      - totalCommission 
+      - totalPenalty 
+      - totalStorage 
+      - totalDeduction 
+      - totalAcceptance 
+      - adCost 
+      + totalCompensations;
+    
+    const marginPercent = totalRealization > 0 ? (grossMargin / totalRealization) * 100 : 0;
     
     result.push({
       nmId: nmId,
       vendorCode: vendorCode,
-      orders: ordersSum,
+      ordersSum: ordersSum,
       adCost: adCost,
       drr: drr,
       clicks: clicks,
       cart: cart,
       cr1: cr1,
-      hasAd: hasAd,
       fbw: fbw,
       fbs: fbs,
-      total: total
+      totalStock: totalStock,
+      shelfPrice: shelfPrice,
+      totalSales: totalSales,              // M: Реализация до СПП (retailPrice)
+      totalRealization: totalRealization,  // N: Продажи после СПП (retailAmount)
+      totalQuantitySales: totalQuantitySales,
+      totalCostPrice: totalCostPrice,
+      totalLogistics: totalLogistics,
+      totalCommission: totalCommission,
+      totalPenalty: totalPenalty,
+      totalStorage: totalStorage,
+      totalDeduction: totalDeduction,
+      totalAcceptance: totalAcceptance,
+      totalCompensations: totalCompensations,
+      grossMargin: grossMargin,
+      marginPercent: marginPercent
     });
   });
   
-  result.sort((a, b) => b.orders - a.orders);
+  result.sort((a, b) => b.totalRealization - a.totalRealization);
   Logger.log('✅ Объединено: ' + result.length + ' товаров');
   return result;
 }
 
 // ============================================================
-// 12. ЗАПИСЬ В ТАБЛИЦУ
+// 14. ЗАПИСЬ В ТАБЛИЦУ (26 СТОЛБЦОВ A-Z)
 // ============================================================
 function writeDataToSheet(sheet, data) {
   if (!data || data.length === 0) {
@@ -663,37 +968,36 @@ function writeDataToSheet(sheet, data) {
   }
   
   const tableData = data.map(item => {
-    const nmId = safeNum(item.nmId);
-    const vendorCode = item.vendorCode || '';
-    const orders = safeNum(item.orders);
-    const adCost = safeNum(item.adCost);
-    const clicks = safeNum(item.clicks);
-    const cart = safeNum(item.cart);
-    const fbw = safeNum(item.fbw);
-    const fbs = safeNum(item.fbs);
-    const total = safeNum(item.total);
-    
-    let drr = '0%';
-    if (adCost > 0 && orders > 0) drr = Math.round((adCost / orders) * 10000) / 100 + '%';
-    else if (adCost > 0 && orders === 0) drr = '100%';
-    
-    let cr1 = '0%';
-    if (clicks > 0 && cart > 0) cr1 = Math.round((cart / clicks) * 10000) / 100 + '%';
+    const marginValue = Math.round(safeNum(item.marginPercent));
+    const marginFormatted = String(marginValue).replace('.', ',') + '%';
     
     return [
-      nmId,
-      vendorCode,
-      Math.round(orders * 100) / 100,
-      Math.round(adCost * 100) / 100,
-      drr,
-      Math.round(clicks),
-      Math.round(cart),
-      cr1,
-      '',
-      '',
-      Math.round(fbw),
-      Math.round(fbs),
-      Math.round(total)
+      safeNum(item.nmId),
+      item.vendorCode || '',
+      Math.round(safeNum(item.ordersSum)),
+      Math.round(safeNum(item.adCost)),
+      safeNum(item.drr) > 0 ? Math.round(safeNum(item.drr)) + '%' : '0%',
+      Math.round(safeNum(item.clicks)),
+      Math.round(safeNum(item.cart)),
+      safeNum(item.cr1) > 0 ? Math.round(safeNum(item.cr1)) + '%' : '0%',
+      Math.round(safeNum(item.fbw)),
+      Math.round(safeNum(item.fbs)),
+      Math.round(safeNum(item.totalStock)),
+      Math.round(safeNum(item.shelfPrice)),
+      Math.round(safeNum(item.totalSales)),
+      Math.round(safeNum(item.totalRealization)),
+      Math.round(safeNum(item.totalQuantitySales)),
+      Math.round(safeNum(item.totalCostPrice)),
+      Math.round(safeNum(item.totalLogistics)),
+      Math.round(safeNum(item.totalCommission)),
+      Math.round(safeNum(item.totalPenalty)),
+      Math.round(safeNum(item.totalStorage)),
+      Math.round(safeNum(item.totalDeduction)),
+      Math.round(safeNum(item.totalAcceptance)),
+      Math.round(safeNum(item.adCost)),
+      Math.round(safeNum(item.totalCompensations)),
+      Math.round(safeNum(item.grossMargin)),
+      marginFormatted
     ];
   });
   
@@ -701,11 +1005,11 @@ function writeDataToSheet(sheet, data) {
   if (lastRow >= 5) sheet.deleteRows(5, lastRow - 4);
   
   sheet.getRange(5, 1, tableData.length, tableData[0].length).setValues(tableData);
-  Logger.log('✅ Записано ' + tableData.length + ' строк');
+  Logger.log('✅ Записано ' + tableData.length + ' строк, 26 столбцов');
 }
 
 // ============================================================
-// 13. УТИЛИТЫ
+// 15. УТИЛИТЫ
 // ============================================================
 function formatDate(date) {
   if (!date || isNaN(date.getTime())) return '';
@@ -713,7 +1017,7 @@ function formatDate(date) {
 }
 
 // ============================================================
-// 14. ОЧИСТКА СТАТУСА (СТРОКА 3)
+// 16. ОЧИСТКА СТАТУСА
 // ============================================================
 function clearStatus() {
   const ui = SpreadsheetApp.getUi();
@@ -742,13 +1046,13 @@ function clearStatus() {
 }
 
 // ============================================================
-// 15. МЕНЮ
+// 17. МЕНЮ
 // ============================================================
 function onOpen() {
   const ui = SpreadsheetApp.getUi();
   const menu = ui.createMenu('📊 Мои отчеты');
-  menu.addItem('🔄 ООО "Ювелир Карат на Савушкина"', 'main');
-  menu.addItem('🔄 ИП "Иванова Ю.С."', 'mainCab2');
+  menu.addItem('🔄 Кабинет 1', 'main');
+  menu.addItem('🔄 Кабинет 2', 'mainCab2');
   menu.addSeparator();
   menu.addItem('🔄 Обновить все', 'mainAll');
   menu.addSeparator();
@@ -760,7 +1064,7 @@ function onOpen() {
 }
 
 // ============================================================
-// 16. ТЕСТ ОСТАТКОВ
+// 18. ТЕСТОВЫЕ ФУНКЦИИ
 // ============================================================
 function testStockData() {
   Logger.log('🔍 Тест загрузки остатков');
@@ -772,7 +1076,129 @@ function testStockData() {
     const sample = keys.slice(0, 5);
     sample.forEach(key => {
       const d = data[key];
-      Logger.log('nmId=' + key + ': FBW=' + d.fbw + ', FBS=' + d.fbs + ', ИТОГО=' + d.total);
+      Logger.log('nmId=' + key + ': FBW=' + d.fbw + ', FBS=' + d.fbs + ', ИТОГО=' + d.total + ', себест=' + d.costPrice);
     });
   }
+}
+
+function testFinancialAggregation() {
+  Logger.log('🔍 ===== ТЕСТ АГРЕГАЦИИ ФИНАНСОВ =====');
+  
+  const token = PropertiesService.getScriptProperties().getProperty('WB_TOKEN');
+  if (!token) { Logger.log('❌ Токен не найден'); return; }
+  
+  const sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName('adv_effectiveness');
+  const dateFrom = new Date(sheet.getRange('B2').getValue());
+  const dateTo = new Date(sheet.getRange('C2').getValue());
+  
+  Logger.log('📅 Период: ' + formatDate(dateFrom) + ' - ' + formatDate(dateTo));
+  
+  const financialData = fetchFinancialData(dateFrom, dateTo, token);
+  const keys = Object.keys(financialData).filter(k => k !== 'total');
+  
+  Logger.log('✅ Загружено: ' + keys.length + ' товаров');
+  
+  let totalRealization = 0;
+  let totalLogistics = 0;
+  let totalStorage = 0;
+  let totalPenalty = 0;
+  let totalDeduction = 0;
+  let totalCommission = 0;
+  
+  keys.forEach(key => {
+    const d = financialData[key];
+    totalRealization += d.salesRetailAmount - d.returnsRetailAmount;
+    totalLogistics += d.logistics;
+    totalStorage += d.storage;
+    totalPenalty += d.penalty;
+    totalDeduction += d.deduction;
+    totalCommission += d.commission;
+  });
+  
+  // Добавляем общие расходы
+  if (financialData['total']) {
+    const t = financialData['total'];
+    totalLogistics += t.logistics;
+    totalStorage += t.storage;
+    totalPenalty += t.penalty;
+    totalDeduction += t.deduction;
+  }
+  
+  Logger.log('📊 ИТОГО:');
+  Logger.log('   Реализация: ' + Math.round(totalRealization) + ' ₽');
+  Logger.log('   Логистика: ' + Math.round(totalLogistics) + ' ₽');
+  Logger.log('   Хранение: ' + Math.round(totalStorage) + ' ₽');
+  Logger.log('   Штрафы: ' + Math.round(totalPenalty) + ' ₽');
+  Logger.log('   Удержания: ' + Math.round(totalDeduction) + ' ₽');
+  Logger.log('   Комиссия: ' + Math.round(totalCommission) + ' ₽');
+}
+
+function debugPenalty() {
+  Logger.log('🔍 ===== ОТЛАДКА ШТРАФОВ =====');
+  
+  const token = PropertiesService.getScriptProperties().getProperty('WB_TOKEN');
+  if (!token) { Logger.log('❌ Токен не найден'); return; }
+  
+  const sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName('adv_effectiveness');
+  const dateFrom = new Date(sheet.getRange('B2').getValue());
+  const dateTo = new Date(sheet.getRange('C2').getValue());
+  
+  const financialData = fetchFinancialData(dateFrom, dateTo, token);
+  const keys = Object.keys(financialData).filter(k => k !== 'total');
+  
+  let totalPenalty = 0;
+  keys.forEach(key => {
+    totalPenalty += financialData[key].penalty;
+  });
+  if (financialData['total']) {
+    totalPenalty += financialData['total'].penalty;
+  }
+  
+  Logger.log('📊 Общая сумма штрафов: ' + totalPenalty + ' ₽');
+  Logger.log('✅ ===== ОТЛАДКА ЗАВЕРШЕНА =====');
+}
+
+function debugFinancialRow(nmIdToCheck) {
+  Logger.log('🔍 ===== ОТЛАДКА ДЛЯ nmId=' + nmIdToCheck + ' =====');
+  
+  const token = PropertiesService.getScriptProperties().getProperty('WB_TOKEN');
+  if (!token) { Logger.log('❌ Токен не найден'); return; }
+  
+  const sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName('adv_effectiveness');
+  const dateFrom = new Date(sheet.getRange('B2').getValue());
+  const dateTo = new Date(sheet.getRange('C2').getValue());
+  
+  const financialData = fetchFinancialData(dateFrom, dateTo, token);
+  
+  if (!financialData[nmIdToCheck]) {
+    Logger.log('❌ nmId ' + nmIdToCheck + ' не найден');
+    return;
+  }
+  
+  const d = financialData[nmIdToCheck];
+  Logger.log('📊 Данные для nmId=' + nmIdToCheck + ':');
+  Logger.log('   Продажи (retailPrice): ' + Math.round(d.salesRetailPrice) + ' ₽');
+  Logger.log('   Продажи (retailAmount): ' + Math.round(d.salesRetailAmount) + ' ₽');
+  Logger.log('   Возвраты (retailPrice): ' + Math.round(d.returnsRetailPrice) + ' ₽');
+  Logger.log('   Возвраты (retailAmount): ' + Math.round(d.returnsRetailAmount) + ' ₽');
+  Logger.log('   Кол-во продаж: ' + d.quantitySales + ' шт');
+  Logger.log('   Кол-во возвратов: ' + d.quantityReturns + ' шт');
+  Logger.log('   Комиссия: ' + Math.round(d.commission) + ' ₽');
+  Logger.log('   Логистика: ' + Math.round(d.logistics) + ' ₽');
+  Logger.log('   Хранение: ' + Math.round(d.storage) + ' ₽');
+  Logger.log('   Штрафы: ' + Math.round(d.penalty) + ' ₽');
+  Logger.log('   Удержания: ' + Math.round(d.deduction) + ' ₽');
+  Logger.log('   Приемка: ' + Math.round(d.acceptance) + ' ₽');
+  
+  const realization = d.salesRetailAmount - d.returnsRetailAmount;
+  const qty = d.quantitySales - d.quantityReturns;
+  const price = qty > 0 ? Math.round(realization / qty) : 0;
+  Logger.log('   Реализация: ' + Math.round(realization) + ' ₽');
+  Logger.log('   Цена полки: ' + price + ' ₽');
+  
+  Logger.log('✅ ===== ОТЛАДКА ЗАВЕРШЕНА =====');
+}
+
+function runDebug() {
+  debugFinancialRow(158868824);
 }
