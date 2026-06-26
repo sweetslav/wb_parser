@@ -121,7 +121,7 @@
 | Statistics API | `/api/v1/supplier/orders` | Заказы |
 | Analytics API | `/api/analytics/v3/sales-funnel/products` | Клики и корзина |
 | Advert API | `/adv/v1/upd` | Рекламные затраты |
-| Content API | `/content/v2/get/cards/list` | Артикулы продавца |
+| Prices API | `[/content/v2/get/cards/list](https://discounts-prices-api.wildberries.ru/api/v2/list/)` | Артикулы продавца |
 
 ### Ограничения
 
