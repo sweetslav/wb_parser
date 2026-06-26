@@ -1,8 +1,6 @@
 // ============================================================
-// ВЕРСИЯ 4.0 - ФИНАЛЬНАЯ (С VENDORCODE)
+// ВЕРСИЯ 5.0 - ПОДДЕРЖКА ДВУХ КАБИНЕТОВ
 // ============================================================
-
-const SHEET_NAME = 'adv_effectiveness';
 
 // API эндпоинты
 const WB_ORDERS_API = 'https://statistics-api.wildberries.ru/api/v1/supplier/orders';
@@ -10,21 +8,65 @@ const WB_ANALYTICS_API = 'https://seller-analytics-api.wildberries.ru/api/analyt
 const WB_CAMPAIGNS_INFO_API = 'https://advert-api.wildberries.ru/api/advert/v2/adverts';
 
 // ============================================================
-// 1. УСТАНОВКА ТОКЕНА
+// 1. КОНФИГУРАЦИЯ КАБИНЕТОВ
+// ============================================================
+const CONFIGS = {
+  cab1: {
+    sheetName: 'adv_effectiveness',
+    tokenKey: 'WB_TOKEN',
+    label: 'Кабинет 1'
+  },
+  cab2: {
+    sheetName: 'adv_effectiveness_2',
+    tokenKey: 'WB_TOKEN_2',
+    label: 'Кабинет 2'
+  }
+};
+
+// ============================================================
+// 2. УСТАНОВКА ТОКЕНОВ
 // ============================================================
 function setWBToken() {
-  const token = 'ВАШ_КЛЮЧ_WILDBERRIES_СЮДА';
+  const token = 'ВАШ_КЛЮЧ_WILDBERRIES_ДЛЯ_ПЕРВОГО_КАБИНЕТА';
   PropertiesService.getScriptProperties().setProperty('WB_TOKEN', token);
-  SpreadsheetApp.getUi().alert('✅ Токен сохранен! Удали его из кода.');
+  SpreadsheetApp.getUi().alert('✅ Токен для первого кабинета сохранен! Удали его из кода.');
+}
+
+function setWBToken2() {
+  const token = 'ВАШ_КЛЮЧ_WILDBERRIES_ДЛЯ_ВТОРОГО_КАБИНЕТА';
+  PropertiesService.getScriptProperties().setProperty('WB_TOKEN_2', token);
+  SpreadsheetApp.getUi().alert('✅ Токен для второго кабинета сохранен! Удали его из кода.');
 }
 
 // ============================================================
-// 2. ГЛАВНАЯ ФУНКЦИЯ
+// 3. ГЛАВНЫЕ ФУНКЦИИ ДЛЯ ЗАПУСКА
 // ============================================================
 function main() {
-  const sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(SHEET_NAME);
+  runForCabinet('cab1');
+}
+
+function mainCab2() {
+  runForCabinet('cab2');
+}
+
+function mainAll() {
+  runForCabinet('cab1');
+  runForCabinet('cab2');
+}
+
+// ============================================================
+// 4. УНИВЕРСАЛЬНАЯ ФУНКЦИЯ ДЛЯ ЛЮБОГО КАБИНЕТА
+// ============================================================
+function runForCabinet(cabinetId) {
+  const config = CONFIGS[cabinetId];
+  if (!config) {
+    Logger.log('❌ Кабинет ' + cabinetId + ' не найден');
+    return;
+  }
+  
+  const sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(config.sheetName);
   if (!sheet) {
-    SpreadsheetApp.getUi().alert('❌ Лист "' + SHEET_NAME + '" не найден!');
+    SpreadsheetApp.getUi().alert('❌ Лист "' + config.sheetName + '" не найден!');
     return;
   }
   
@@ -32,17 +74,18 @@ function main() {
   const dateTo = new Date(sheet.getRange('C2').getValue());
   
   if (isNaN(dateFrom.getTime()) || isNaN(dateTo.getTime())) {
-    SpreadsheetApp.getUi().alert('❌ Введите корректные даты в B2 и C2!');
+    SpreadsheetApp.getUi().alert('❌ Введите корректные даты в B2 и C2 на листе "' + config.sheetName + '"!');
     return;
   }
   
-  const token = PropertiesService.getScriptProperties().getProperty('WB_TOKEN');
+  const token = PropertiesService.getScriptProperties().getProperty(config.tokenKey);
   if (!token) {
-    SpreadsheetApp.getUi().alert('❌ Токен не найден! Запусти setWBToken()');
+    SpreadsheetApp.getUi().alert('❌ Токен для ' + config.label + ' не найден! Запусти setWBToken2()');
     return;
   }
   
-  SpreadsheetApp.getUi().alert('⏳ Загружаем данные...\n- Заказы\n- Клики/Корзина\n- Реклама\n- Артикулы продавца');
+  SpreadsheetApp.getActive().toast('⏳ Загружаем данные для ' + config.label + '...', 'Статус', 5);
+  Logger.log('🚀 Запуск для ' + config.label);
   
   // --- 1. ЗАКАЗЫ ---
   Logger.log('📊 1. Загружаем заказы...');
@@ -56,7 +99,7 @@ function main() {
   Logger.log('📊 3. Загружаем рекламу...');
   const advCosts = fetchAdvCosts(dateFrom, dateTo, token);
   
-  // --- 4. ВСЕ VENDORCODE (ОДНИМ ЗАПРОСОМ) ---
+  // --- 4. ВСЕ VENDORCODE ---
   Logger.log('📊 4. Загружаем артикулы продавца...');
   const vendorCodes = fetchAllVendorCodes(token);
   
@@ -64,7 +107,7 @@ function main() {
   const merged = mergeAllData(orders, detail, advCosts, vendorCodes);
   
   if (merged.length === 0) {
-    SpreadsheetApp.getUi().alert('⚠️ Данные не получены. Проверь логи.');
+    SpreadsheetApp.getUi().alert('⚠️ Данные не получены для ' + config.label + '. Проверь логи.');
     return;
   }
   
@@ -95,7 +138,7 @@ function main() {
   const withVendorCode = merged.filter(i => i.vendorCode).length;
   
   SpreadsheetApp.getUi().alert(
-    '✅ Готово!\n' +
+    '✅ ' + config.label + ' готово!\n' +
     '📦 Товаров: ' + tableData.length + '\n' +
     '🏷️ С vendorCode: ' + withVendorCode + '\n' +
     '💰 С рекламой: ' + advCount + '\n' +
@@ -106,7 +149,7 @@ function main() {
 }
 
 // ============================================================
-// 3. ЗАПРОС ЗАКАЗОВ
+// 5. ЗАПРОС ЗАКАЗОВ
 // ============================================================
 function fetchWBOrders(dateFrom, token) {
   const from = Utilities.formatDate(dateFrom, SpreadsheetApp.getActive().getSpreadsheetTimeZone(), 'yyyy-MM-dd');
@@ -151,7 +194,7 @@ function fetchWBOrders(dateFrom, token) {
 }
 
 // ============================================================
-// 4. ЗАПРОС К АНАЛИТИКЕ (с пагинацией)
+// 6. ЗАПРОС К АНАЛИТИКЕ (с пагинацией)
 // ============================================================
 function fetchAnalytics(dateFrom, dateTo, token) {
   const from = Utilities.formatDate(dateFrom, SpreadsheetApp.getActive().getSpreadsheetTimeZone(), 'yyyy-MM-dd');
@@ -199,12 +242,10 @@ function fetchAnalytics(dateFrom, dateTo, token) {
       allProducts = allProducts.concat(products);
       Logger.log('📦 Загружено ' + allProducts.length + ' товаров');
       
-      // Если пришло меньше, чем limit — значит, это последняя страница
       if (products.length < limit) {
         hasMore = false;
       } else {
         offset += limit;
-        // Небольшая пауза между запросами, чтобы не превысить лимиты
         Utilities.sleep(200);
       }
       
@@ -245,7 +286,7 @@ function fetchAnalytics(dateFrom, dateTo, token) {
 }
 
 // ============================================================
-// 5. ЗАПРОС РЕКЛАМЫ (/upd СО СДВИГОМ -7 ДНЕЙ)
+// 7. ЗАПРОС РЕКЛАМЫ (/upd СО СДВИГОМ -7 ДНЕЙ)
 // ============================================================
 function fetchAdvCosts(dateFrom, dateTo, token) {
   const advDateFrom = new Date(dateFrom);
@@ -265,7 +306,6 @@ function fetchAdvCosts(dateFrom, dateTo, token) {
   };
   
   try {
-    // 1. Получаем все затраты из /upd
     const updUrl = `https://advert-api.wildberries.ru/adv/v1/upd?from=${from}&to=${to}`;
     const updResponse = UrlFetchApp.fetch(updUrl, options);
     const code = updResponse.getResponseCode();
@@ -284,7 +324,6 @@ function fetchAdvCosts(dateFrom, dateTo, token) {
     
     Logger.log('✅ /upd: получено ' + data.length + ' записей о затратах');
     
-    // Суммируем затраты по кампаниям
     const costsByCampaign = {};
     data.forEach(item => {
       const advertId = item.advertId;
@@ -299,10 +338,8 @@ function fetchAdvCosts(dateFrom, dateTo, token) {
     Logger.log('💰 Общие затраты на рекламу: ' + totalAdCost + ' ₽');
     Logger.log('📊 Затраты по ' + Object.keys(costsByCampaign).length + ' кампаниям');
     
-    // 2. Получаем информацию о кампаниях для привязки к артикулам
     const campaignsInfo = fetchCampaignsInfo(token);
     
-    // 3. Сопоставляем затраты с артикулами
     const result = {};
     let assignedCount = 0;
     
@@ -338,7 +375,7 @@ function fetchAdvCosts(dateFrom, dateTo, token) {
 }
 
 // ============================================================
-// 6. ИНФОРМАЦИЯ О КАМПАНИЯХ
+// 8. ИНФОРМАЦИЯ О КАМПАНИЯХ
 // ============================================================
 function fetchCampaignsInfo(token) {
   const options = {
@@ -404,7 +441,7 @@ function fetchCampaignsInfo(token) {
 }
 
 // ============================================================
-// 7. ПОЛУЧЕНИЕ ВСЕХ VENDORCODE (ЧЕРЕЗ API ЦЕН И СКИДОК)
+// 9. ПОЛУЧЕНИЕ ВСЕХ VENDORCODE (ЧЕРЕЗ API ЦЕН И СКИДОК)
 // ============================================================
 function fetchAllVendorCodes(token) {
   const options = {
@@ -454,7 +491,6 @@ function fetchAllVendorCodes(token) {
     
     const result = {};
     allGoods.forEach(item => {
-      // ВНИМАНИЕ: в API Цен поле называется nmID (с большой D)!
       const nmId = item.nmID;
       if (nmId && item.vendorCode) {
         result[nmId] = item.vendorCode;
@@ -471,7 +507,7 @@ function fetchAllVendorCodes(token) {
 }
 
 // ============================================================
-// 8. СКЛЕИВАНИЕ ВСЕХ ДАННЫХ
+// 10. СКЛЕИВАНИЕ ВСЕХ ДАННЫХ
 // ============================================================
 function mergeAllData(orders, detail, adv, vendorCodes) {
   const allIds = new Set();
@@ -535,7 +571,7 @@ function mergeAllData(orders, detail, adv, vendorCodes) {
 }
 
 // ============================================================
-// 9. ЗАПИСЬ В ТАБЛИЦУ
+// 11. ЗАПИСЬ В ТАБЛИЦУ
 // ============================================================
 function writeDataToSheet(sheet, data) {
   const lastRow = sheet.getLastRow();
@@ -553,19 +589,21 @@ function writeDataToSheet(sheet, data) {
 }
 
 // ============================================================
-// 10. КНОПКА В МЕНЮ
+// 12. КНОПКИ В МЕНЮ
 // ============================================================
 function onOpen() {
   const ui = SpreadsheetApp.getUi();
-  ui.createMenu('📊 Мои отчеты')
-    .addItem('🔄 Обновить данные (v4.0)', 'main')
-    .addToUi();
+  const menu = ui.createMenu('📊 Мои отчеты');
+  menu.addItem('🔄 Кабинет 1', 'main');
+  menu.addItem('🔄 Кабинет 2', 'mainCab2');
+  menu.addSeparator();
+  menu.addItem('🔄 Обновить все кабинеты', 'mainAll');
+  menu.addToUi();
 }
 
 // ============================================================
-// 11. ТЕСТЫ ДЛЯ ОТЛАДКИ
+// 13. ТЕСТЫ ДЛЯ ОТЛАДКИ
 // ============================================================
-
 function testAllCardsVendorCodes() {
   const token = PropertiesService.getScriptProperties().getProperty('WB_TOKEN');
   if (!token) {
